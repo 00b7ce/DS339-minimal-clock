@@ -3,11 +3,12 @@ mod bulk;
 #[cfg(windows)]
 #[path = "bulk_windows.rs"]
 mod bulk;
+mod clock;
 mod ds339;
 mod frame;
+mod gui;
 mod renderer;
 
-use chrono::Local;
 use std::env;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -20,6 +21,7 @@ enum Command {
     TestPattern,
     ClockOnce,
     Clock,
+    Gui,
 }
 
 fn main() -> ExitCode {
@@ -30,6 +32,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if matches!(command, Command::Gui) {
+        return match gui::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("GUI failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     let devices = match ds339::detect() {
         Ok(devices) => devices,
@@ -153,6 +165,7 @@ fn main() -> ExitCode {
         Command::TestPattern => send_test_frame(),
         Command::ClockOnce => send_clock(false),
         Command::Clock => send_clock(true),
+        Command::Gui => unreachable!(),
     };
     if let Err(error) = result {
         eprintln!("Display update failed: {error}");
@@ -169,7 +182,10 @@ fn parse_arguments() -> Result<Command, String> {
         [argument] if argument == "--test-pattern" => Ok(Command::TestPattern),
         [argument] if argument == "--clock-once" => Ok(Command::ClockOnce),
         [argument] if argument == "--clock" => Ok(Command::Clock),
-        _ => Err("Usage: jonsbo-ds339-minimal [--test-pattern|--clock-once|--clock]".to_owned()),
+        [argument] if argument == "--gui" => Ok(Command::Gui),
+        _ => Err(
+            "Usage: jonsbo-ds339-minimal [--test-pattern|--clock-once|--clock|--gui]".to_owned(),
+        ),
     }
 }
 
@@ -181,19 +197,10 @@ fn send_clock(continuous: bool) -> Result<(), String> {
             .map_err(|error| format!("failed to install shutdown handler: {error}"))?;
     }
 
-    let control = ds339::ControlConnection::open().map_err(|error| error.to_string())?;
-    let mut video = bulk::VideoConnection::open()?;
-    let renderer = renderer::ClockRenderer::new(renderer::ClockStyle::default())?;
-
-    control
-        .set_native_mode()
-        .map_err(|error| error.to_string())?;
+    let mut display = clock::ClockDisplay::open(renderer::ClockStyle::default())?;
 
     loop {
-        let text = Local::now().format("%H:%M:%S").to_string();
-        let pixels = renderer.render(&text);
-        let encoded = frame::encode(&pixels)?;
-        video.write_all(&encoded)?;
+        let text = display.update()?;
         println!("Displayed {text}");
 
         if !continuous {
