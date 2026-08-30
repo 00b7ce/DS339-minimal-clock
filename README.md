@@ -1,71 +1,73 @@
 # DS339 Minimal Clock
 
-JONSBO DS339へ時計画像を定期送信する、非公式の軽量デスクトップアプリケーションです。背景画像・色、フォント、文字サイズ、文字色、配置をGUIで設定し、実際に送信するフレームをそのままプレビューできます。
+An unofficial, lightweight desktop application that continuously displays a configurable clock on the JONSBO DS339. The GUI lets you combine a background image or color with a selected font, size, color, and placement, while previewing the exact logical frame sent to the display.
 
 > [!IMPORTANT]
-> JONSBO公式ソフトウェアではありません。現在、実機での送信はWindows環境で確認済みです。Linux版はビルド可能な構成ですが、DS339実機での動作は未確認です。
+> This is not official JONSBO software. Communication with physical hardware has been verified on Windows. Linux builds are provided, but hardware communication on Linux has not yet been verified on a DS339.
 
-## 主な機能
+## Features
 
-- 1秒ごとの時計表示（`HH:MM:SS`）
-- 背景画像（PNG/JPEG）または背景色
-- インストール済みフォントのドロップダウン選択
-- フォントサイズ、文字色、中央配置または座標指定
-- DS339へ送るフレームと同じ内容のプレビュー
-- 複数プロファイルの保存・切り替えとバックアップ復旧
-- システムトレイ常駐（Start / Apply、Stop、設定表示、終了）
-- PCログイン時の自動起動、自動Start、トレイ格納
-- USB接続確認やテストパターン送信を行うCLI
+- Updates an `HH:MM:SS` clock once per second
+- Uses a PNG/JPEG background image or a solid background color
+- Lists installed fonts in a drop-down menu
+- Configures font size, text color, centered placement, or exact coordinates
+- Previews the same `960x376` logical frame that is sent to the DS339
+- Saves multiple profiles and restores the selected profile on launch
+- Runs in the system tray with Start / Apply, Stop, Open settings, and Exit actions
+- Can start automatically at sign-in, begin output immediately, and remain hidden in the tray
+- Includes CLI commands for USB diagnostics and test-pattern output
 
-## Windowsで使う
+## Windows quick start
 
-1. [Releases](https://github.com/00b7ce/DS339-minimal-clock/releases)からWindows版ZIPをダウンロードして展開します。
-2. DS339の純正ソフトウェア／ドライバーをセットアップします。
-3. `jonsbo-ds339-gui.exe`を起動します。
-4. 背景、フォント、サイズ、色、配置を調整し、`Start / Apply`を押します。
+1. Download and extract the Windows archive from [Releases](https://github.com/00b7ce/DS339-minimal-clock/releases).
+2. Install the official JONSBO software/driver first, then close the official application.
+3. Run `jonsbo-ds339-gui.exe`.
+4. Choose a background and font settings, then select **Start / Apply**.
 
-Windows版のUSB映像送信は`libusb0.dll`を動的に読み込みます。`libusb0.dll`が見つからない場合は、純正環境のインストール状況とDLLがWindowsの検索パスまたは実行ファイルと同じフォルダーに存在することを確認してください。DLL自体はこのリポジトリやReleaseへ同梱していません。
+The Windows USB video transport dynamically loads `libusb0.dll`. If the DLL cannot be found, verify the official software installation and ensure that its directory is on the Windows search path or place the DLL beside the executable. The DLL itself is not distributed in this repository or its releases.
 
-### プロファイル
+Closing the settings window keeps the application running in the system tray. Use **Exit** in the tray menu to stop output and terminate the application.
 
-`Save as`へ名前を入力して`Save`を押すと、現在の表示設定を保存します。選択中のプロファイルは次回起動時にも復元されます。
+### Profiles
 
-設定ファイルの保存先:
+Enter a name under **Save as**, then select **Save** to store the current display settings. The selected profile is restored on the next launch.
+
+Profile data is stored at:
 
 - Windows: `%APPDATA%\jonsbo-ds339-minimal\profiles.toml`
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/jonsbo-ds339-minimal/profiles.toml`
 
-上書き保存時には`profiles.toml.bak`を作成し、メインファイルが壊れている場合はバックアップから復旧します。
+Before overwriting the file, the application creates `profiles.toml.bak`. If the main file is damaged, it attempts to recover from that backup.
 
-### ログイン時の自動起動
+### Start automatically at sign-in
 
-`Start automatically at sign-in (hidden in the system tray)`を有効にすると、現在のユーザーでログインした際に次の動作を行います。
+Enable **Start automatically at sign-in (hidden in the system tray)** to:
 
-1. GUIを`--autostart`付きで起動
-2. 設定ウィンドウを表示せずタスクトレイへ格納
-3. 選択中のプロファイルでDS339への送信を開始
+1. Launch the GUI with `--autostart` after the current user signs in.
+2. Keep the settings window hidden in the system tray.
+3. Start DS339 output immediately with the selected profile.
 
-Windowsでは現在ユーザーの`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`、LinuxではXDG Autostartを使用します。チェックを外すと登録を削除します。
+Windows uses `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; Linux uses an XDG Autostart desktop entry. Disabling the option removes the registration.
 
 ## CLI
 
-`jonsbo-ds339-minimal`には診断用コマンドがあります。
+`jonsbo-ds339-minimal` includes diagnostic commands:
 
 ```text
-jonsbo-ds339-minimal                  # USB/HID接続確認（表示は変更しない）
-jonsbo-ds339-minimal --test-pattern   # RGBテストパターンを送信
-jonsbo-ds339-minimal --clock-once     # 時計を1フレーム送信
-jonsbo-ds339-minimal --clock          # 1秒ごとに時計を送信（Ctrl+Cで停止）
-jonsbo-ds339-minimal --gui            # GUIを起動（コンソールあり）
+jonsbo-ds339-minimal                  # Check USB/HID connectivity without changing the display
+jonsbo-ds339-minimal --test-pattern   # Send the RGB test pattern
+jonsbo-ds339-minimal --clock-once     # Send one clock frame
+jonsbo-ds339-minimal --clock          # Update the clock once per second; stop with Ctrl+C
+jonsbo-ds339-minimal --gui            # Launch the GUI with a console window
 ```
 
-`--test-pattern`で期待される論理表示は次の画像です。横置きでは実機側の向きに合わせて回転して見える場合があります。
+The expected logical image for `--test-pattern` is shown below. Depending on the physical orientation of the display, it may appear rotated.
 
 ![Expected RGB test pattern](docs/expected-test-pattern.png)
 
 ## Linux
 
-Release ActionはUbuntu上でLinux x86_64版をビルドします。Ubuntu/Debianでローカルビルドする場合の主なネイティブ依存関係は次のとおりです。
+The release workflow builds Linux x86_64 binaries on Ubuntu. For a local Ubuntu/Debian build, install the native dependencies:
 
 ```bash
 sudo apt-get update
@@ -75,15 +77,15 @@ sudo apt-get install -y \
   libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
 ```
 
-その後、Rust stableでビルドします。
+Then build with stable Rust:
 
 ```bash
 cargo build --release --bins
 ```
 
-LinuxではUSBデバイスへのアクセス権限（udevルールまたは適切なグループ設定）が別途必要になる場合があります。現時点ではLinux実機送信を未検証のため、Release版も実験的扱いです。
+Access to the USB device may require an appropriate udev rule or group membership. Linux binaries should currently be considered experimental because physical DS339 communication has not yet been verified on Linux.
 
-## 開発と検証
+## Development
 
 ```bash
 cargo fmt --all -- --check
@@ -92,14 +94,14 @@ cargo test --all-targets --all-features
 cargo build --release --bins
 ```
 
-対象としているDS339のUSB情報はVID `345F`、PID `9132`、映像用インターフェース`3`、Bulk OUTエンドポイント`0x04`です。論理プレビューは横向き`960x376`で生成し、実機送信用のネイティブ向きへ変換します。
+The currently targeted DS339 has USB VID `345F`, PID `9132`, image interface `3`, and bulk OUT endpoint `0x04`. Frames are rendered as a landscape `960x376` logical image and converted to the device's native orientation and BGR byte order before transmission.
 
-## 既知の制限
+## Known limitations
 
-- Windows以外での実機動作は未確認です。
-- 複数台のDS339を個別選択するUIはありません。
-- スリープ復帰後の自動再接続は未実装です。エラー時はトレイまたはGUIから再度`Start / Apply`してください。
-- 署名付きインストーラーや自動更新機能はありません。
+- Physical hardware operation has only been verified on Windows.
+- There is no UI for choosing between multiple connected DS339 devices.
+- Automatic reconnection after sleep is not implemented. Select **Start / Apply** again if the device disconnects.
+- The project does not include a signed installer or automatic updater.
 
 ## License
 
