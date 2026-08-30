@@ -1,0 +1,9 @@
+[package]
+name = "jonsbo-ds339-minimal"
+version = "0.1.0"
+edition = "2024"
+description = "A minimal desktop application for displaying a configurable clock on the JONSBO DS339"
+publish = false
+
+[dependencies]
+
