@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows-latest
+          - name: linux-x86_64
+            os: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libudev-dev libusb-1.0-0-dev \
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+
+      - name: Verify
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+          cargo build --release --bins
+
+      - name: Package Windows binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = "DS339-minimal-clock-windows-x86_64"
+          $packageDirectory = Join-Path dist $package
+          New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
+          Copy-Item target/release/jonsbo-ds339-gui.exe $packageDirectory
+          Copy-Item target/release/jonsbo-ds339-minimal.exe $packageDirectory
+          Copy-Item README.md, LICENSE $packageDirectory
+          Compress-Archive -Path "$packageDirectory/*" -DestinationPath "dist/$package.zip"
+
+      - name: Package Linux binaries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          package="DS339-minimal-clock-linux-x86_64"
+          package_directory="dist/$package"
+          mkdir -p "$package_directory"
+          cp target/release/jonsbo-ds339-gui "$package_directory/"
+          cp target/release/jonsbo-ds339-minimal "$package_directory/"
+          cp README.md LICENSE "$package_directory/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+
+      - name: Upload packaged binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -1,50 +1,106 @@
-# JONSBO DS339 Minimal
+# DS339 Minimal Clock
 
-JONSBO DS339に、背景画像と時計を合成した映像を定期送信するための軽量な常駐アプリケーションです。
+JONSBO DS339へ時計画像を定期送信する、非公式の軽量デスクトップアプリケーションです。背景画像・色、フォント、文字サイズ、文字色、配置をGUIで設定し、実際に送信するフレームをそのままプレビューできます。
 
-Windowsを最初の動作対象とし、Linux向けビルドにも対応できる構成を目指します。
+> [!IMPORTANT]
+> JONSBO公式ソフトウェアではありません。現在、実機での送信はWindows環境で確認済みです。Linux版はビルド可能な構成ですが、DS339実機での動作は未確認です。
 
-## 現在の状態
+## 主な機能
 
-DS339の検出、映像送信、背景と時計の合成を行うCLIと設定GUIを実装しています。横置きの実機でテストパターンと時計が正常表示されることを確認済みです。GUIから送信の開始、設定の適用、停止ができます。
+- 1秒ごとの時計表示（`HH:MM:SS`）
+- 背景画像（PNG/JPEG）または背景色
+- インストール済みフォントのドロップダウン選択
+- フォントサイズ、文字色、中央配置または座標指定
+- DS339へ送るフレームと同じ内容のプレビュー
+- 複数プロファイルの保存・切り替えとバックアップ復旧
+- システムトレイ常駐（Start / Apply、Stop、設定表示、終了）
+- PCログイン時の自動起動、自動Start、トレイ格納
+- USB接続確認やテストパターン送信を行うCLI
 
-## 開発
+## Windowsで使う
 
-Rustのstableツールチェーンを使用します。
+1. [Releases](https://github.com/00b7ce/DS339-minimal-clock/releases)からWindows版ZIPをダウンロードして展開します。
+2. DS339の純正ソフトウェア／ドライバーをセットアップします。
+3. `jonsbo-ds339-gui.exe`を起動します。
+4. 背景、フォント、サイズ、色、配置を調整し、`Start / Apply`を押します。
 
-```powershell
+Windows版のUSB映像送信は`libusb0.dll`を動的に読み込みます。`libusb0.dll`が見つからない場合は、純正環境のインストール状況とDLLがWindowsの検索パスまたは実行ファイルと同じフォルダーに存在することを確認してください。DLL自体はこのリポジトリやReleaseへ同梱していません。
+
+### プロファイル
+
+`Save as`へ名前を入力して`Save`を押すと、現在の表示設定を保存します。選択中のプロファイルは次回起動時にも復元されます。
+
+設定ファイルの保存先:
+
+- Windows: `%APPDATA%\jonsbo-ds339-minimal\profiles.toml`
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/jonsbo-ds339-minimal/profiles.toml`
+
+上書き保存時には`profiles.toml.bak`を作成し、メインファイルが壊れている場合はバックアップから復旧します。
+
+### ログイン時の自動起動
+
+`Start automatically at sign-in (hidden in the system tray)`を有効にすると、現在のユーザーでログインした際に次の動作を行います。
+
+1. GUIを`--autostart`付きで起動
+2. 設定ウィンドウを表示せずタスクトレイへ格納
+3. 選択中のプロファイルでDS339への送信を開始
+
+Windowsでは現在ユーザーの`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`、LinuxではXDG Autostartを使用します。チェックを外すと登録を削除します。
+
+## CLI
+
+`jonsbo-ds339-minimal`には診断用コマンドがあります。
+
+```text
+jonsbo-ds339-minimal                  # USB/HID接続確認（表示は変更しない）
+jonsbo-ds339-minimal --test-pattern   # RGBテストパターンを送信
+jonsbo-ds339-minimal --clock-once     # 時計を1フレーム送信
+jonsbo-ds339-minimal --clock          # 1秒ごとに時計を送信（Ctrl+Cで停止）
+jonsbo-ds339-minimal --gui            # GUIを起動（コンソールあり）
+```
+
+`--test-pattern`で期待される論理表示は次の画像です。横置きでは実機側の向きに合わせて回転して見える場合があります。
+
+![Expected RGB test pattern](docs/expected-test-pattern.png)
+
+## Linux
+
+Release ActionはUbuntu上でLinux x86_64版をビルドします。Ubuntu/Debianでローカルビルドする場合の主なネイティブ依存関係は次のとおりです。
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential pkg-config \
+  libudev-dev libusb-1.0-0-dev \
+  libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+```
+
+その後、Rust stableでビルドします。
+
+```bash
+cargo build --release --bins
+```
+
+LinuxではUSBデバイスへのアクセス権限（udevルールまたは適切なグループ設定）が別途必要になる場合があります。現時点ではLinux実機送信を未検証のため、Release版も実験的扱いです。
+
+## 開発と検証
+
+```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
-cargo build
-cargo run
-cargo run -- --test-pattern
-cargo run -- --clock-once
-cargo run -- --clock
-cargo run --bin jonsbo-ds339-gui
+cargo build --release --bins
 ```
 
-`cargo run`はDS339のUSB ID `345F:9132`を検索し、HIDインターフェースと映像用Bulk OUTエンドポイント`0x04`を開けるか確認します。HIDではパネル接続状態レジスターを読み取りますが、画面設定の変更や映像送信は行いません。
+対象としているDS339のUSB情報はVID `345F`、PID `9132`、映像用インターフェース`3`、Bulk OUTエンドポイント`0x04`です。論理プレビューは横向き`960x376`で生成し、実機送信用のネイティブ向きへ変換します。
 
-Windowsでは純正ドライバーが導入する`libusb0.dll`を動的に利用します。Linuxでは`rusb`（libusb 1.0）を利用する構成です。
+## 既知の制限
 
-`--test-pattern`を指定した場合だけ、DS339をネイティブ解像度に設定してRGBカラーバーを1フレーム送信します。通常起動では画面内容を変更しません。
+- Windows以外での実機動作は未確認です。
+- 複数台のDS339を個別選択するUIはありません。
+- スリープ復帰後の自動再接続は未実装です。エラー時はトレイまたはGUIから再度`Start / Apply`してください。
+- 署名付きインストーラーや自動更新機能はありません。
 
-`--clock-once`は現在時刻を1フレーム送信します。`--clock`は1秒ごとに時計を更新し、`Ctrl+C`で終了します。現在は黒に近い背景、システムの既定サンセリフフォント、120px、白文字、中央配置の固定設定です。描画処理自体は背景画像、フォント名、サイズ、文字色、座標配置を受け取れる構成になっています。
+## License
 
-`jonsbo-ds339-gui`はコンソールウィンドウを表示せずに設定画面を開くWindows向けGUI実行ファイルです。背景画像はパス入力または`Browse...`から選択でき、フォントはインストール済みフォントの一覧から選択できます。フォントサイズ、色、中央配置または座標を指定し、`Start / Apply`で1秒更新を開始します。
-
-横置き時の出力プレビューは設定変更に追従し、送信中はDS339へ実際に送信できた合成フレームそのものを表示します。CLIの通常起動は、これまでどおり画面を変更せず接続確認だけを行います。
-
-期待されるネイティブフレームは次の画像です。実機の取り付け方向では90度回転して表示される場合があります。
-
-![Expected RGB test pattern](docs/expected-test-pattern.svg)
-
-## 実装予定
-
-1. ~~DS339の検出と接続~~
-2. ~~テスト画像の送信~~
-3. ~~背景画像と時計の合成~~
-4. ~~設定GUI~~、タスクトレイ常駐
-5. USB切断・再接続とスリープ復帰への対応
-6. Linuxでのビルドと実機通信の検証
+[MIT License](LICENSE)
