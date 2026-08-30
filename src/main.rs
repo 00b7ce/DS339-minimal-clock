@@ -1,20 +1,10 @@
-#[cfg(target_os = "linux")]
-mod bulk;
-#[cfg(windows)]
-#[path = "bulk_windows.rs"]
-mod bulk;
-mod clock;
-mod ds339;
-mod frame;
-mod gui;
-mod renderer;
-
 use std::env;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::Duration;
+
+use jonsbo_ds339_minimal::{bulk, clock, ds339, frame, gui, renderer};
 
 enum Command {
     Probe,
@@ -190,14 +180,15 @@ fn parse_arguments() -> Result<Command, String> {
 }
 
 fn send_clock(continuous: bool) -> Result<(), String> {
-    let running = Arc::new(AtomicBool::new(true));
+    let stop_requested = Arc::new(AtomicBool::new(false));
     if continuous {
-        let running = Arc::clone(&running);
-        ctrlc::set_handler(move || running.store(false, Ordering::SeqCst))
+        let stop_requested = Arc::clone(&stop_requested);
+        ctrlc::set_handler(move || stop_requested.store(true, Ordering::SeqCst))
             .map_err(|error| format!("failed to install shutdown handler: {error}"))?;
     }
 
     let mut display = clock::ClockDisplay::open(renderer::ClockStyle::default())?;
+    let mut ticker = clock::FrameTicker::new(Duration::from_secs(1));
 
     loop {
         let update = display.update()?;
@@ -206,8 +197,7 @@ fn send_clock(continuous: bool) -> Result<(), String> {
         if !continuous {
             return Ok(());
         }
-        thread::sleep(Duration::from_secs(1));
-        if !running.load(Ordering::SeqCst) {
+        if !ticker.wait(&stop_requested) {
             println!("Clock stopped.");
             return Ok(());
         }

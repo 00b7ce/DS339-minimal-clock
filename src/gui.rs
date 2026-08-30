@@ -8,8 +8,10 @@ use std::time::Duration;
 use chrono::Local;
 use eframe::egui;
 
-use crate::clock::ClockDisplay;
-use crate::renderer::{ClockRenderer, ClockStyle, LOGICAL_HEIGHT, LOGICAL_WIDTH};
+use crate::clock::{ClockDisplay, FrameTicker};
+use crate::renderer::{
+    ClockRenderer, ClockStyle, LOGICAL_HEIGHT, LOGICAL_WIDTH, system_font_families,
+};
 
 pub fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
@@ -28,6 +30,7 @@ struct SettingsApp {
     background_path: String,
     background_color: [u8; 3],
     font_family: String,
+    font_families: Vec<String>,
     font_size: f32,
     text_color: [u8; 3],
     centered: bool,
@@ -36,6 +39,7 @@ struct SettingsApp {
     status: String,
     worker: Option<DisplayWorker>,
     events: Option<Receiver<WorkerEvent>>,
+    file_dialog: Option<Receiver<Option<PathBuf>>>,
     preview_renderer: Option<ClockRenderer>,
     preview_style: Option<ClockStyle>,
     preview_texture: Option<egui::TextureHandle>,
@@ -50,6 +54,7 @@ impl Default for SettingsApp {
             background_path: String::new(),
             background_color: style.background_color,
             font_family: String::new(),
+            font_families: system_font_families(),
             font_size: style.font_size,
             text_color: style.text_color,
             centered: true,
@@ -58,6 +63,7 @@ impl Default for SettingsApp {
             status: "Stopped".to_owned(),
             worker: None,
             events: None,
+            file_dialog: None,
             preview_renderer: None,
             preview_style: None,
             preview_texture: None,
@@ -126,6 +132,33 @@ impl SettingsApp {
         }
     }
 
+    fn receive_file_dialog(&mut self) {
+        let Some(receiver) = &self.file_dialog else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Some(path)) => {
+                self.background_path = path.display().to_string();
+                self.file_dialog = None;
+            }
+            Ok(None) | Err(mpsc::TryRecvError::Disconnected) => {
+                self.file_dialog = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn open_background_dialog(&mut self) {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let selection = rfd::FileDialog::new()
+                .add_filter("Image files", &["png", "jpg", "jpeg"])
+                .pick_file();
+            let _ = sender.send(selection);
+        });
+        self.file_dialog = Some(receiver);
+    }
+
     fn update_preview(&mut self, context: &egui::Context) {
         let style = self.style();
         if self.preview_style.as_ref() != Some(&style) {
@@ -174,6 +207,7 @@ impl SettingsApp {
 impl eframe::App for SettingsApp {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_events(root_ui.ctx());
+        self.receive_file_dialog();
         self.update_preview(root_ui.ctx());
         root_ui
             .ctx()
@@ -188,8 +222,19 @@ impl eframe::App for SettingsApp {
                 .spacing([16.0, 10.0])
                 .show(ui, |ui| {
                     ui.label("Background image");
-                    ui.text_edit_singleline(&mut self.background_path)
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.background_path)
+                                .desired_width(220.0),
+                        )
                         .on_hover_text("Leave blank to use the background color");
+                        if ui
+                            .add_enabled(self.file_dialog.is_none(), egui::Button::new("Browse..."))
+                            .clicked()
+                        {
+                            self.open_background_dialog();
+                        }
+                    });
                     ui.end_row();
 
                     ui.label("Background color");
@@ -197,8 +242,25 @@ impl eframe::App for SettingsApp {
                     ui.end_row();
 
                     ui.label("Font family");
-                    ui.text_edit_singleline(&mut self.font_family)
-                        .on_hover_text("Leave blank to use the system sans-serif font");
+                    let selected_font = if self.font_family.is_empty() {
+                        "System default"
+                    } else {
+                        &self.font_family
+                    };
+                    egui::ComboBox::from_id_salt("font-family")
+                        .selected_text(selected_font)
+                        .width(280.0)
+                        .height(300.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.font_family,
+                                String::new(),
+                                "System default",
+                            );
+                            for family in &self.font_families {
+                                ui.selectable_value(&mut self.font_family, family.clone(), family);
+                            }
+                        });
                     ui.end_row();
 
                     ui.label("Font size");
@@ -288,6 +350,7 @@ impl DisplayWorker {
                     return;
                 }
             };
+            let mut ticker = FrameTicker::new(Duration::from_secs(1));
 
             while !worker_stop.load(Ordering::SeqCst) {
                 match display.update() {
@@ -308,12 +371,9 @@ impl DisplayWorker {
                     }
                 }
 
-                for _ in 0..10 {
-                    if worker_stop.load(Ordering::SeqCst) {
-                        let _ = sender.send(WorkerEvent::Stopped);
-                        return;
-                    }
-                    thread::sleep(Duration::from_millis(100));
+                if !ticker.wait(&worker_stop) {
+                    let _ = sender.send(WorkerEvent::Stopped);
+                    return;
                 }
             }
             let _ = sender.send(WorkerEvent::Stopped);

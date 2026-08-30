@@ -1,4 +1,7 @@
 use chrono::Local;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::bulk;
 use crate::ds339;
@@ -14,6 +17,42 @@ pub struct ClockDisplay {
 pub struct ClockUpdate {
     pub time: String,
     pub logical_rgb: Vec<u8>,
+}
+
+pub struct FrameTicker {
+    interval: Duration,
+    next_deadline: Instant,
+}
+
+impl FrameTicker {
+    pub fn new(interval: Duration) -> Self {
+        Self::from_start(Instant::now(), interval)
+    }
+
+    fn from_start(start: Instant, interval: Duration) -> Self {
+        Self {
+            interval,
+            next_deadline: start + interval,
+        }
+    }
+
+    pub fn wait(&mut self, stop_requested: &AtomicBool) -> bool {
+        let deadline = self.take_deadline();
+        while !stop_requested.load(Ordering::SeqCst) {
+            let now = Instant::now();
+            if now >= deadline {
+                return true;
+            }
+            thread::sleep((deadline - now).min(Duration::from_millis(50)));
+        }
+        false
+    }
+
+    fn take_deadline(&mut self) -> Instant {
+        let deadline = self.next_deadline;
+        self.next_deadline += self.interval;
+        deadline
+    }
 }
 
 impl ClockDisplay {
@@ -43,5 +82,21 @@ impl ClockDisplay {
             time: text,
             logical_rgb,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ticker_deadlines_are_anchored_to_the_start_time() {
+        let start = Instant::now();
+        let interval = Duration::from_secs(1);
+        let mut ticker = FrameTicker::from_start(start, interval);
+
+        assert_eq!(ticker.take_deadline(), start + interval);
+        assert_eq!(ticker.take_deadline(), start + interval * 2);
+        assert_eq!(ticker.take_deadline(), start + interval * 3);
     }
 }

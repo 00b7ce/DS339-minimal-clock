@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use fontdb::{Database, Family, Query};
@@ -12,6 +13,21 @@ use crate::frame;
 pub const LOGICAL_WIDTH: usize = 960;
 pub const LOGICAL_HEIGHT: usize = 376;
 const CHANNELS: usize = 3;
+
+pub fn system_font_families() -> Vec<String> {
+    let mut database = Database::new();
+    database.load_system_fonts();
+
+    let mut families = BTreeMap::new();
+    for face in database.faces() {
+        if let Some((family, _)) = face.families.first() {
+            families
+                .entry(family.to_lowercase())
+                .or_insert_with(|| family.clone());
+        }
+    }
+    families.into_values().collect()
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClockStyle {
@@ -243,5 +259,16 @@ mod tests {
 
         assert_eq!(logical.len(), LOGICAL_WIDTH * LOGICAL_HEIGHT * CHANNELS);
         assert!(!logical.contains(&0xFF));
+    }
+
+    #[test]
+    fn system_font_family_names_are_sorted_and_unique() {
+        let families = system_font_families();
+        assert!(!families.is_empty());
+        assert!(
+            families
+                .windows(2)
+                .all(|pair| pair[0].to_lowercase() < pair[1].to_lowercase())
+        );
     }
 }
