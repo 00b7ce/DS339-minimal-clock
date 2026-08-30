@@ -1,7 +1,12 @@
 use hidapi::{HidApi, HidDevice, HidError};
+use std::thread;
+use std::time::Duration;
 
 pub const VENDOR_ID: u16 = 0x345F;
 pub const PRODUCT_ID: u16 = 0x9132;
+const NATIVE_WIDTH: u16 = 376;
+const NATIVE_HEIGHT: u16 = 960;
+const NATIVE_VIC: u8 = 171;
 
 #[derive(Debug)]
 pub struct DetectedDevice {
@@ -15,6 +20,58 @@ pub struct DetectedDevice {
     pub open_error: Option<String>,
     pub panel_connected: Option<bool>,
     pub status_error: Option<String>,
+}
+
+pub struct ControlConnection {
+    device: HidDevice,
+}
+
+impl ControlConnection {
+    pub fn open() -> Result<Self, HidError> {
+        let api = HidApi::new()?;
+        let device = api.open(VENDOR_ID, PRODUCT_ID)?;
+        Ok(Self { device })
+    }
+
+    pub fn set_native_mode(&self) -> Result<(), HidError> {
+        let [width_high, width_low] = NATIVE_WIDTH.to_be_bytes();
+        let [height_high, height_low] = NATIVE_HEIGHT.to_be_bytes();
+
+        self.write_control([0xA6, 0x07, 0x01, 0x02, 0, 0, 0, 0])?;
+        self.write_control([0xA6, 0x05, 0x00, 0, 0, 0, 0, 0])?;
+        self.write_control([0xA6, 0x03, 0x03, 0, 0, 0, 0, 0])?;
+        self.write_control([
+            0xA6,
+            0x01,
+            width_high,
+            width_low,
+            height_high,
+            height_low,
+            0x11,
+            0x00,
+        ])?;
+        self.write_control([
+            0xA6,
+            0x02,
+            NATIVE_VIC,
+            0x00,
+            width_high,
+            width_low,
+            height_high,
+            height_low,
+        ])?;
+        self.write_control([0xA6, 0x04, 0x01, 0, 0, 0, 0, 0])?;
+        self.write_control([0xA6, 0x05, 0x01, 0, 0, 0, 0, 0])?;
+        thread::sleep(Duration::from_millis(100));
+        Ok(())
+    }
+
+    fn write_control(&self, payload: [u8; 8]) -> Result<(), HidError> {
+        let mut report = [0_u8; 9];
+        report[1..].copy_from_slice(&payload);
+        self.device.send_feature_report(&report)?;
+        Ok(())
+    }
 }
 
 pub fn detect() -> Result<Vec<DetectedDevice>, HidError> {

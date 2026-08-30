@@ -18,11 +18,14 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 cargo build
 cargo run
+cargo run -- --test-pattern
 ```
 
 `cargo run`はDS339のUSB ID `345F:9132`を検索し、HIDインターフェースと映像用Bulk OUTエンドポイント`0x04`を開けるか確認します。HIDではパネル接続状態レジスターを読み取りますが、画面設定の変更や映像送信は行いません。
 
 Windowsでは純正ドライバーが導入する`libusb0.dll`を動的に利用します。Linuxでは`rusb`（libusb 1.0）を利用する構成です。
+
+`--test-pattern`を指定した場合だけ、DS339をネイティブ解像度に設定してRGBカラーバーを1フレーム送信します。通常起動では画面内容を変更しません。
 
 ## 実装予定
 

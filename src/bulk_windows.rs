@@ -71,6 +71,8 @@ type UsbOpen = unsafe extern "C" fn(*mut UsbDevice) -> *mut UsbDeviceHandle;
 type UsbClose = unsafe extern "C" fn(*mut UsbDeviceHandle) -> c_int;
 type UsbClaimInterface = unsafe extern "C" fn(*mut UsbDeviceHandle, c_int) -> c_int;
 type UsbReleaseInterface = unsafe extern "C" fn(*mut UsbDeviceHandle, c_int) -> c_int;
+type UsbBulkWrite =
+    unsafe extern "C" fn(*mut UsbDeviceHandle, c_int, *mut c_char, c_int, c_int) -> c_int;
 type UsbStrError = unsafe extern "C" fn() -> *const c_char;
 
 struct Libusb0 {
@@ -83,6 +85,7 @@ struct Libusb0 {
     close: UsbClose,
     claim_interface: UsbClaimInterface,
     release_interface: UsbReleaseInterface,
+    bulk_write: UsbBulkWrite,
     strerror: UsbStrError,
 }
 
@@ -100,6 +103,7 @@ impl Libusb0 {
             let close = load_symbol(&library, b"usb_close\0")?;
             let claim_interface = load_symbol(&library, b"usb_claim_interface\0")?;
             let release_interface = load_symbol(&library, b"usb_release_interface\0")?;
+            let bulk_write = load_symbol(&library, b"usb_bulk_write\0")?;
             let strerror = load_symbol(&library, b"usb_strerror\0")?;
 
             Ok(Self {
@@ -112,6 +116,7 @@ impl Libusb0 {
                 close,
                 claim_interface,
                 release_interface,
+                bulk_write,
                 strerror,
             })
         }
@@ -127,6 +132,74 @@ impl Libusb0 {
             unsafe { CStr::from_ptr(error) }
                 .to_string_lossy()
                 .into_owned()
+        }
+    }
+}
+
+pub struct VideoConnection {
+    api: Libusb0,
+    handle: *mut UsbDeviceHandle,
+}
+
+impl VideoConnection {
+    pub fn open() -> Result<Self, String> {
+        let api = Libusb0::load()?;
+        // SAFETY: These calls initialize and refresh libusb0's owned device list.
+        unsafe {
+            (api.init)();
+            (api.find_busses)();
+            (api.find_devices)();
+        }
+
+        let device = find_device(&api).ok_or_else(|| "DS339 bulk device not found".to_owned())?;
+        // SAFETY: device points into the current libusb0 device list.
+        let handle = unsafe { (api.open)(device) };
+        if handle.is_null() {
+            return Err(api.last_error());
+        }
+
+        // SAFETY: handle was returned by usb_open and is closed on failure or Drop.
+        let claim_result = unsafe { (api.claim_interface)(handle, VIDEO_INTERFACE.into()) };
+        if claim_result != 0 {
+            let error = format!("{} (code {claim_result})", api.last_error());
+            // SAFETY: handle is valid and has not been closed.
+            unsafe { (api.close)(handle) };
+            return Err(error);
+        }
+
+        Ok(Self { api, handle })
+    }
+
+    pub fn write_all(&mut self, data: &[u8]) -> Result<(), String> {
+        for chunk in data.chunks(65_536) {
+            // SAFETY: handle is open, endpoint 0x04 is the claimed bulk OUT endpoint,
+            // and the buffer remains valid for the duration of the synchronous call.
+            let written = unsafe {
+                (self.api.bulk_write)(
+                    self.handle,
+                    VIDEO_ENDPOINT.into(),
+                    chunk.as_ptr().cast_mut().cast(),
+                    chunk.len() as c_int,
+                    5_000,
+                )
+            };
+            if written < 0 {
+                return Err(format!("{} (code {written})", self.api.last_error()));
+            }
+            if written as usize != chunk.len() {
+                return Err(format!("short bulk write: {written}/{} bytes", chunk.len()));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for VideoConnection {
+    fn drop(&mut self) {
+        // SAFETY: handle remains valid until these final release and close calls.
+        unsafe {
+            (self.api.release_interface)(self.handle, VIDEO_INTERFACE.into());
+            (self.api.close)(self.handle);
         }
     }
 }
@@ -193,6 +266,26 @@ pub fn detect() -> Result<Vec<BulkDevice>, String> {
     }
 
     Ok(matches)
+}
+
+fn find_device(api: &Libusb0) -> Option<*mut UsbDevice> {
+    // SAFETY: Traversal is limited to libusb0-owned lists from the latest enumeration.
+    unsafe {
+        let mut bus = (api.get_busses)();
+        while !bus.is_null() {
+            let mut device = ptr::addr_of!((*bus).devices).read_unaligned();
+            while !device.is_null() {
+                let vendor_id = ptr::addr_of!((*device).descriptor.vendor_id).read_unaligned();
+                let product_id = ptr::addr_of!((*device).descriptor.product_id).read_unaligned();
+                if vendor_id == VENDOR_ID && product_id == PRODUCT_ID {
+                    return Some(device);
+                }
+                device = ptr::addr_of!((*device).next).read_unaligned();
+            }
+            bus = ptr::addr_of!((*bus).next).read_unaligned();
+        }
+    }
+    None
 }
 
 #[cfg(test)]

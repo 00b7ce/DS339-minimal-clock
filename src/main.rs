@@ -4,10 +4,20 @@ mod bulk;
 #[path = "bulk_windows.rs"]
 mod bulk;
 mod ds339;
+mod frame;
 
+use std::env;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    let send_test_pattern = match parse_arguments() {
+        Ok(send_test_pattern) => send_test_pattern,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let devices = match ds339::detect() {
         Ok(devices) => devices,
         Err(error) => {
@@ -120,9 +130,43 @@ fn main() -> ExitCode {
 
     if bulk_connected == 0 {
         eprintln!("\nThe DS339 was detected, but its bulk interface could not be claimed.");
-        ExitCode::FAILURE
-    } else {
-        println!("\nBulk connection check passed for {bulk_connected} device(s).");
-        ExitCode::SUCCESS
+        return ExitCode::FAILURE;
     }
+
+    println!("\nBulk connection check passed for {bulk_connected} device(s).");
+
+    if send_test_pattern && let Err(error) = send_test_frame() {
+        eprintln!("Test pattern failed: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn parse_arguments() -> Result<bool, String> {
+    let arguments: Vec<_> = env::args().skip(1).collect();
+    match arguments.as_slice() {
+        [] => Ok(false),
+        [argument] if argument == "--test-pattern" => Ok(true),
+        _ => Err("Usage: jonsbo-ds339-minimal [--test-pattern]".to_owned()),
+    }
+}
+
+fn send_test_frame() -> Result<(), String> {
+    let control = ds339::ControlConnection::open().map_err(|error| error.to_string())?;
+    let mut video = bulk::VideoConnection::open()?;
+    let pixels = frame::color_bars();
+    let encoded = frame::encode(&pixels)?;
+
+    control
+        .set_native_mode()
+        .map_err(|error| error.to_string())?;
+    video.write_all(&encoded)?;
+    println!(
+        "\nSent a {}x{} RGB test pattern ({} bytes).",
+        frame::WIDTH,
+        frame::HEIGHT,
+        encoded.len()
+    );
+    Ok(())
 }

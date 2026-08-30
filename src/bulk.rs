@@ -14,6 +14,40 @@ pub struct BulkDevice {
     pub open_error: Option<String>,
 }
 
+pub struct VideoConnection {
+    handle: rusb::DeviceHandle<rusb::GlobalContext>,
+}
+
+impl VideoConnection {
+    pub fn open() -> Result<Self, String> {
+        let handle = rusb::open_device_with_vid_pid(VENDOR_ID, PRODUCT_ID)
+            .ok_or_else(|| "DS339 bulk device not found".to_owned())?;
+        handle
+            .claim_interface(VIDEO_INTERFACE)
+            .map_err(|error| error.to_string())?;
+        Ok(Self { handle })
+    }
+
+    pub fn write_all(&mut self, data: &[u8]) -> Result<(), String> {
+        for chunk in data.chunks(65_536) {
+            let written = self
+                .handle
+                .write_bulk(VIDEO_ENDPOINT, chunk, std::time::Duration::from_secs(5))
+                .map_err(|error| error.to_string())?;
+            if written != chunk.len() {
+                return Err(format!("short bulk write: {written}/{} bytes", chunk.len()));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for VideoConnection {
+    fn drop(&mut self) {
+        let _ = self.handle.release_interface(VIDEO_INTERFACE);
+    }
+}
+
 pub fn detect() -> Result<Vec<BulkDevice>, rusb::Error> {
     let devices = rusb::devices()?;
     let mut matches = Vec::new();
