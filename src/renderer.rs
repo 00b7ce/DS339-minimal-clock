@@ -13,7 +13,7 @@ pub const LOGICAL_WIDTH: usize = 960;
 pub const LOGICAL_HEIGHT: usize = 376;
 const CHANNELS: usize = 3;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ClockStyle {
     pub background_path: Option<PathBuf>,
     pub background_color: [u8; 3],
@@ -57,7 +57,7 @@ impl ClockRenderer {
         })
     }
 
-    pub fn render(&self, text: &str) -> Vec<u8> {
+    pub fn render_logical(&self, text: &str) -> Vec<u8> {
         let mut logical_rgb = self.background.clone();
         let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
         let settings = match self.style.position {
@@ -102,7 +102,25 @@ impl ClockRenderer {
             }
         }
 
-        rotate_clockwise_to_native_bgr(&logical_rgb)
+        // The DS339 reserves 0xFF as a frame marker. Applying the same color
+        // adjustment here keeps the preview pixel-identical to the sent image.
+        logical_rgb.iter_mut().for_each(|channel| {
+            if *channel == 0xFF {
+                *channel = 0xFE;
+            }
+        });
+        logical_rgb
+    }
+
+    pub fn native_bgr(logical_rgb: &[u8]) -> Result<Vec<u8>, String> {
+        let expected = LOGICAL_WIDTH * LOGICAL_HEIGHT * CHANNELS;
+        if logical_rgb.len() != expected {
+            return Err(format!(
+                "invalid logical pixel buffer length: {} (expected {expected})",
+                logical_rgb.len()
+            ));
+        }
+        Ok(rotate_clockwise_to_native_bgr(logical_rgb))
     }
 }
 
@@ -133,20 +151,20 @@ fn load_font(requested_family: Option<&str>) -> Result<Font, String> {
     let mut database = Database::new();
     database.load_system_fonts();
 
-    let requested = requested_family.map(Family::Name);
-    let family = requested.unwrap_or(Family::SansSerif);
-    let id = database
-        .query(&Query {
-            families: &[family],
-            ..Query::default()
-        })
-        .or_else(|| {
-            database.query(&Query {
+    let id = match requested_family {
+        Some(family) => database
+            .query(&Query {
+                families: &[Family::Name(family)],
+                ..Query::default()
+            })
+            .ok_or_else(|| format!("font family was not found: {family}"))?,
+        None => database
+            .query(&Query {
                 families: &[Family::SansSerif],
                 ..Query::default()
             })
-        })
-        .ok_or_else(|| "no usable system font was found".to_owned())?;
+            .ok_or_else(|| "no usable system font was found".to_owned())?,
+    };
 
     database
         .with_face_data(id, |data, collection_index| {
@@ -216,5 +234,14 @@ mod tests {
             ..ClockStyle::default()
         };
         assert_eq!(style.position, Some((10, 20)));
+    }
+
+    #[test]
+    fn logical_render_uses_transmittable_color_values() {
+        let renderer = ClockRenderer::new(ClockStyle::default()).unwrap();
+        let logical = renderer.render_logical("12:34:56");
+
+        assert_eq!(logical.len(), LOGICAL_WIDTH * LOGICAL_HEIGHT * CHANNELS);
+        assert!(!logical.contains(&0xFF));
     }
 }

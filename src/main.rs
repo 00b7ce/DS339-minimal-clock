@@ -200,8 +200,8 @@ fn send_clock(continuous: bool) -> Result<(), String> {
     let mut display = clock::ClockDisplay::open(renderer::ClockStyle::default())?;
 
     loop {
-        let text = display.update()?;
-        println!("Displayed {text}");
+        let update = display.update()?;
+        println!("Displayed {}", update.time);
 
         if !continuous {
             return Ok(());

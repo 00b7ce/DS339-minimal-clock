@@ -5,14 +5,15 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use chrono::Local;
 use eframe::egui;
 
 use crate::clock::ClockDisplay;
-use crate::renderer::ClockStyle;
+use crate::renderer::{ClockRenderer, ClockStyle, LOGICAL_HEIGHT, LOGICAL_WIDTH};
 
 pub fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([520.0, 430.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 650.0]),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
@@ -35,6 +36,11 @@ struct SettingsApp {
     status: String,
     worker: Option<DisplayWorker>,
     events: Option<Receiver<WorkerEvent>>,
+    preview_renderer: Option<ClockRenderer>,
+    preview_style: Option<ClockStyle>,
+    preview_texture: Option<egui::TextureHandle>,
+    preview_time: String,
+    preview_error: Option<String>,
 }
 
 impl Default for SettingsApp {
@@ -52,6 +58,11 @@ impl Default for SettingsApp {
             status: "Stopped".to_owned(),
             worker: None,
             events: None,
+            preview_renderer: None,
+            preview_style: None,
+            preview_texture: None,
+            preview_time: String::new(),
+            preview_error: None,
         }
     }
 }
@@ -87,10 +98,15 @@ impl SettingsApp {
         let Some(events) = &self.events else {
             return;
         };
+        let received: Vec<_> = events.try_iter().collect();
         let mut finished = false;
-        while let Ok(event) = events.try_recv() {
+        for event in received {
             self.status = match event {
-                WorkerEvent::Displayed(time) => format!("Running - {time}"),
+                WorkerEvent::Displayed { time, logical_rgb } => {
+                    self.set_preview_texture(context, &logical_rgb);
+                    self.preview_time = time.clone();
+                    format!("Running - {time}")
+                }
                 WorkerEvent::Stopped => {
                     finished = true;
                     "Stopped".to_owned()
@@ -109,16 +125,59 @@ impl SettingsApp {
             self.events = None;
         }
     }
+
+    fn update_preview(&mut self, context: &egui::Context) {
+        let style = self.style();
+        if self.preview_style.as_ref() != Some(&style) {
+            match ClockRenderer::new(style.clone()) {
+                Ok(renderer) => {
+                    self.preview_renderer = Some(renderer);
+                    self.preview_error = None;
+                }
+                Err(error) => {
+                    self.preview_renderer = None;
+                    self.preview_error = Some(error);
+                }
+            }
+            self.preview_style = Some(style);
+            self.preview_time.clear();
+        }
+
+        let time = Local::now().format("%H:%M:%S").to_string();
+        if self.preview_time == time || self.worker.is_some() {
+            return;
+        }
+        self.preview_time = time.clone();
+
+        let Some(renderer) = &self.preview_renderer else {
+            return;
+        };
+        let pixels = renderer.render_logical(&time);
+        self.set_preview_texture(context, &pixels);
+    }
+
+    fn set_preview_texture(&mut self, context: &egui::Context, pixels: &[u8]) {
+        let image = egui::ColorImage::from_rgb([LOGICAL_WIDTH, LOGICAL_HEIGHT], pixels);
+        match &mut self.preview_texture {
+            Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+            None => {
+                self.preview_texture = Some(context.load_texture(
+                    "clock-preview",
+                    image,
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+        }
+    }
 }
 
 impl eframe::App for SettingsApp {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_events(root_ui.ctx());
-        if self.worker.is_some() {
-            root_ui
-                .ctx()
-                .request_repaint_after(Duration::from_millis(250));
-        }
+        self.update_preview(root_ui.ctx());
+        root_ui
+            .ctx()
+            .request_repaint_after(Duration::from_millis(250));
 
         egui::CentralPanel::default().show(root_ui, |ui| {
             ui.heading("JONSBO DS339 Clock");
@@ -179,6 +238,17 @@ impl eframe::App for SettingsApp {
             });
             ui.add_space(12.0);
             ui.label(&self.status);
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.label("Output preview (press Start / Apply to send changes)");
+            if let Some(error) = &self.preview_error {
+                ui.colored_label(egui::Color32::LIGHT_RED, error);
+            } else if let Some(texture) = &self.preview_texture {
+                let width = ui.available_width().min(720.0);
+                let height = width * LOGICAL_HEIGHT as f32 / LOGICAL_WIDTH as f32;
+                ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(width, height)));
+            }
         });
     }
 }
@@ -195,7 +265,7 @@ fn non_empty(value: &str) -> Option<&str> {
 }
 
 enum WorkerEvent {
-    Displayed(String),
+    Displayed { time: String, logical_rgb: Vec<u8> },
     Stopped,
     Failed(String),
 }
@@ -221,8 +291,14 @@ impl DisplayWorker {
 
             while !worker_stop.load(Ordering::SeqCst) {
                 match display.update() {
-                    Ok(time) => {
-                        if sender.send(WorkerEvent::Displayed(time)).is_err() {
+                    Ok(update) => {
+                        if sender
+                            .send(WorkerEvent::Displayed {
+                                time: update.time,
+                                logical_rgb: update.logical_rgb,
+                            })
+                            .is_err()
+                        {
                             return;
                         }
                     }
