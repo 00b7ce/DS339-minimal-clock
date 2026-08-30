@@ -181,6 +181,10 @@ fn load_font(requested_family: Option<&str>) -> Result<Font, String> {
                 families: &[Family::SansSerif],
                 ..Query::default()
             })
+            // Some minimal Linux environments contain fonts but do not expose a
+            // generic sans-serif family mapping. Use any installed face rather
+            // than failing the default configuration in that case.
+            .or_else(|| database.faces().next().map(|face| face.id))
             .ok_or_else(|| "no usable system font was found".to_owned())?,
     };
 
