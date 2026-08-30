@@ -7,27 +7,48 @@ use std::time::Duration;
 
 use chrono::Local;
 use eframe::egui;
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::autostart::{AUTOSTART_ARGUMENT, LoginLauncher};
 use crate::clock::{ClockDisplay, FrameTicker};
 use crate::profile::{ProfileRepository, ProfileStore};
 use crate::renderer::{
     ClockRenderer, ClockStyle, LOGICAL_HEIGHT, LOGICAL_WIDTH, system_font_families,
 };
 
+const TRAY_SHOW: &str = "show";
+const TRAY_START: &str = "start";
+const TRAY_STOP: &str = "stop";
+const TRAY_EXIT: &str = "exit";
+
 pub fn run() -> Result<(), String> {
+    let launched_by_autostart = std::env::args_os().any(|argument| argument == AUTOSTART_ARGUMENT);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 650.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([760.0, 650.0])
+            .with_visible(!launched_by_autostart),
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
         "JONSBO DS339 Minimal",
         options,
-        Box::new(|_| Ok(Box::new(SettingsApp::default()))),
+        Box::new(move |creation_context| {
+            Ok(Box::new(SettingsApp::new(
+                creation_context,
+                launched_by_autostart,
+            )))
+        }),
     )
     .map_err(|error| error.to_string())
 }
 
 struct SettingsApp {
+    login_launcher: Option<LoginLauncher>,
+    tray_icon: Option<TrayIcon>,
+    tray_status: String,
+    exit_requested: bool,
+    autostart_hide_frames: u8,
     profile_repository: Option<ProfileRepository>,
     profile_store: ProfileStore,
     profile_name: String,
@@ -52,8 +73,8 @@ struct SettingsApp {
     preview_error: Option<String>,
 }
 
-impl Default for SettingsApp {
-    fn default() -> Self {
+impl SettingsApp {
+    fn new(creation_context: &eframe::CreationContext<'_>, launched_by_autostart: bool) -> Self {
         let (profile_repository, profile_store, profile_status) = match ProfileRepository::new() {
             Ok(repository) => match repository.load() {
                 Ok(loaded) => (
@@ -72,11 +93,45 @@ impl Default for SettingsApp {
             .cloned()
             .unwrap_or_default();
         let (position_x, position_y) = style.position.unwrap_or_default();
-        Self {
+        let (tray_icon, tray_status) = match create_tray_icon() {
+            Ok(icon) => (Some(icon), String::new()),
+            Err(error) => (None, format!("Tray unavailable: {error}")),
+        };
+        let start_on_launch = profile_store.start_on_launch;
+        let (login_launcher, login_status) = match LoginLauncher::new() {
+            Ok(launcher) => {
+                let status = if start_on_launch {
+                    launcher.enable().err()
+                } else {
+                    match launcher.is_enabled() {
+                        Ok(true) => Some(
+                            "Login startup is registered but disabled in this profile; toggle the setting to resync"
+                                .to_owned(),
+                        ),
+                        Ok(false) => None,
+                        Err(error) => Some(error),
+                    }
+                };
+                (Some(launcher), status.unwrap_or_default())
+            }
+            Err(error) => (None, error),
+        };
+        let mut app = Self {
+            login_launcher,
+            tray_icon,
+            tray_status,
+            exit_requested: false,
+            // eframe shows the root window after its first rendered frame. Reapply hidden state
+            // for that frame and the next one so login startup remains tray-only.
+            autostart_hide_frames: if launched_by_autostart { 2 } else { 0 },
             profile_repository,
             profile_store,
             profile_name,
-            profile_status,
+            profile_status: if login_status.is_empty() {
+                profile_status
+            } else {
+                login_status
+            },
             background_path: style
                 .background_path
                 .as_ref()
@@ -99,11 +154,15 @@ impl Default for SettingsApp {
             preview_texture: None,
             preview_time: String::new(),
             preview_error: None,
+        };
+        if start_on_launch || launched_by_autostart {
+            app.start();
         }
+        if launched_by_autostart && app.tray_icon.is_none() {
+            show_window(&creation_context.egui_ctx);
+        }
+        app
     }
-}
-
-impl SettingsApp {
     fn style(&self) -> ClockStyle {
         ClockStyle {
             background_path: non_empty(&self.background_path).map(PathBuf::from),
@@ -173,6 +232,29 @@ impl SettingsApp {
         };
     }
 
+    fn set_login_startup(&mut self, enabled: bool) {
+        let Some(launcher) = &self.login_launcher else {
+            self.profile_status = "Login startup is unavailable".to_owned();
+            return;
+        };
+        let result = if enabled {
+            launcher.enable()
+        } else {
+            launcher.disable()
+        };
+        match result {
+            Ok(()) => {
+                self.profile_store.start_on_launch = enabled;
+                self.save_profile_store(if enabled {
+                    "Login startup enabled"
+                } else {
+                    "Login startup disabled"
+                });
+            }
+            Err(error) => self.profile_status = error,
+        }
+    }
+
     fn stop(&mut self) {
         if let Some(mut worker) = self.worker.take() {
             worker.stop();
@@ -225,6 +307,38 @@ impl SettingsApp {
                 self.file_dialog = None;
             }
             Err(mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn receive_tray_events(&mut self, context: &egui::Context) {
+        for event in MenuEvent::receiver().try_iter() {
+            match event.id.as_ref() {
+                TRAY_SHOW => show_window(context),
+                TRAY_START => self.start(),
+                TRAY_STOP => {
+                    self.stop();
+                    self.status = "Stopped".to_owned();
+                }
+                TRAY_EXIT => {
+                    self.exit_requested = true;
+                    self.stop();
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                _ => {}
+            }
+        }
+
+        for event in TrayIconEvent::receiver().try_iter() {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
+            ) {
+                show_window(context);
+            }
         }
     }
 
@@ -286,6 +400,17 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.autostart_hide_frames > 0 {
+            root_ui
+                .ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            root_ui
+                .ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.autostart_hide_frames -= 1;
+            root_ui.ctx().request_repaint();
+        }
+        self.receive_tray_events(root_ui.ctx());
         self.receive_events(root_ui.ctx());
         self.receive_file_dialog();
         self.update_preview(root_ui.ctx());
@@ -425,6 +550,25 @@ impl eframe::App for SettingsApp {
             ui.add_space(12.0);
             ui.label(&self.status);
 
+            let mut start_on_launch = self.profile_store.start_on_launch;
+            if ui
+                .add_enabled(
+                    self.login_launcher.is_some(),
+                    egui::Checkbox::new(
+                        &mut start_on_launch,
+                        "Start automatically at sign-in (hidden in the system tray)",
+                    ),
+                )
+                .changed()
+            {
+                self.set_login_startup(start_on_launch);
+            }
+            if self.tray_icon.is_some() {
+                ui.small("Closing this window keeps the app in the system tray.");
+            } else if !self.tray_status.is_empty() {
+                ui.colored_label(egui::Color32::LIGHT_RED, &self.tray_status);
+            }
+
             ui.add_space(12.0);
             ui.separator();
             ui.label("Output preview (press Start / Apply to send changes)");
@@ -436,6 +580,20 @@ impl eframe::App for SettingsApp {
                 ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(width, height)));
             }
         });
+
+        if root_ui
+            .ctx()
+            .input(|input| input.viewport().close_requested())
+            && !self.exit_requested
+            && self.tray_icon.is_some()
+        {
+            root_ui
+                .ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            root_ui
+                .ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
     }
 }
 
@@ -448,6 +606,58 @@ impl Drop for SettingsApp {
 fn non_empty(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn show_window(context: &egui::Context) {
+    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    context.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
+
+fn create_tray_icon() -> Result<TrayIcon, String> {
+    let menu = Menu::new();
+    let show = MenuItem::with_id(TRAY_SHOW, "Open settings", true, None);
+    let start = MenuItem::with_id(TRAY_START, "Start / Apply", true, None);
+    let stop = MenuItem::with_id(TRAY_STOP, "Stop", true, None);
+    let separator = PredefinedMenuItem::separator();
+    let exit = MenuItem::with_id(TRAY_EXIT, "Exit", true, None);
+    menu.append_items(&[&show, &start, &stop, &separator, &exit])
+        .map_err(|error| error.to_string())?;
+
+    TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false)
+        .with_tooltip("JONSBO DS339 Minimal")
+        .with_icon(tray_icon_image()?)
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+fn tray_icon_image() -> Result<Icon, String> {
+    const SIZE: u32 = 32;
+    let mut rgba = vec![0_u8; (SIZE * SIZE * 4) as usize];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as i32 - 16;
+            let dy = y as i32 - 16;
+            let radius_squared = dx * dx + dy * dy;
+            let color = if radius_squared <= 14 * 14 {
+                if radius_squared >= 11 * 11 {
+                    [78, 174, 255, 255]
+                } else if (x == 16 && (8..=17).contains(&y)) || (y == 16 && (16..=23).contains(&x))
+                {
+                    [255, 255, 255, 255]
+                } else {
+                    [18, 27, 40, 255]
+                }
+            } else {
+                [0, 0, 0, 0]
+            };
+            let offset = ((y * SIZE + x) * 4) as usize;
+            rgba[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+    Icon::from_rgba(rgba, SIZE, SIZE).map_err(|error| error.to_string())
 }
 
 enum WorkerEvent {

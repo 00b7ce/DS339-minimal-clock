@@ -7,6 +7,7 @@ publish = false
 default-run = "jonsbo-ds339-minimal"
 
 [dependencies]
+auto-launcher = "1.1.0"
 chrono = "0.4.45"
 ctrlc = "3.5.2"
 directories = "6.0.0"
@@ -17,6 +18,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.4"
+tray-icon = "0.24.2"
 
 [target.'cfg(windows)'.dependencies]
 hidapi = { version = "2.6.6", default-features = false, features = ["windows-native"] }

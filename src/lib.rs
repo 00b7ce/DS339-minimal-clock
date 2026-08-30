@@ -1,3 +1,4 @@
+pub mod autostart;
 #[cfg(target_os = "linux")]
 pub mod bulk;
 #[cfg(windows)]
