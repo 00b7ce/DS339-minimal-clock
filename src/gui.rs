@@ -1,7 +1,7 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -47,7 +47,8 @@ struct SettingsApp {
     login_launcher: Option<LoginLauncher>,
     tray_icon: Option<TrayIcon>,
     tray_status: String,
-    exit_requested: bool,
+    exit_requested: Arc<AtomicBool>,
+    tray_events: Option<Receiver<TrayAction>>,
     autostart_hide_frames: u8,
     profile_repository: Option<ProfileRepository>,
     profile_store: ProfileStore,
@@ -64,7 +65,7 @@ struct SettingsApp {
     position_y: i32,
     status: String,
     worker: Option<DisplayWorker>,
-    events: Option<Receiver<WorkerEvent>>,
+    events: Option<Arc<WorkerMailbox>>,
     file_dialog: Option<Receiver<Option<PathBuf>>>,
     preview_renderer: Option<ClockRenderer>,
     preview_style: Option<ClockStyle>,
@@ -97,6 +98,10 @@ impl SettingsApp {
             Ok(icon) => (Some(icon), String::new()),
             Err(error) => (None, format!("Tray unavailable: {error}")),
         };
+        let exit_requested = Arc::new(AtomicBool::new(false));
+        let tray_events = tray_icon.as_ref().map(|_| {
+            install_tray_event_handlers(&creation_context.egui_ctx, Arc::clone(&exit_requested))
+        });
         let start_on_launch = profile_store.start_on_launch;
         let (login_launcher, login_status) = match LoginLauncher::new() {
             Ok(launcher) => {
@@ -120,7 +125,8 @@ impl SettingsApp {
             login_launcher,
             tray_icon,
             tray_status,
-            exit_requested: false,
+            exit_requested,
+            tray_events,
             // eframe shows the root window after its first rendered frame. Reapply hidden state
             // for that frame and the next one so login startup remains tray-only.
             autostart_hide_frames: if launched_by_autostart { 2 } else { 0 },
@@ -263,29 +269,26 @@ impl SettingsApp {
     }
 
     fn receive_events(&mut self, context: &egui::Context) {
-        let Some(events) = &self.events else {
+        let Some(event) = self.events.as_ref().and_then(|events| events.take()) else {
             return;
         };
-        let received: Vec<_> = events.try_iter().collect();
         let mut finished = false;
-        for event in received {
-            self.status = match event {
-                WorkerEvent::Displayed { time, logical_rgb } => {
-                    self.set_preview_texture(context, &logical_rgb);
-                    self.preview_time = time.clone();
-                    format!("Running - {time}")
-                }
-                WorkerEvent::Stopped => {
-                    finished = true;
-                    "Stopped".to_owned()
-                }
-                WorkerEvent::Failed(error) => {
-                    finished = true;
-                    format!("Error: {error}")
-                }
-            };
-            context.request_repaint();
-        }
+        self.status = match event {
+            WorkerEvent::Displayed { time, logical_rgb } => {
+                self.set_preview_texture(context, &logical_rgb);
+                self.preview_time = time.clone();
+                format!("Running - {time}")
+            }
+            WorkerEvent::Stopped => {
+                finished = true;
+                "Stopped".to_owned()
+            }
+            WorkerEvent::Failed(error) => {
+                finished = true;
+                format!("Error: {error}")
+            }
+        };
+        context.request_repaint();
         if finished {
             if let Some(mut worker) = self.worker.take() {
                 worker.stop();
@@ -311,35 +314,21 @@ impl SettingsApp {
     }
 
     fn receive_tray_events(&mut self, context: &egui::Context) {
-        for event in MenuEvent::receiver().try_iter() {
-            match event.id.as_ref() {
-                TRAY_SHOW => show_window(context),
-                TRAY_START => self.start(),
-                TRAY_STOP => {
+        let received: Vec<_> = self
+            .tray_events
+            .as_ref()
+            .map(|events| events.try_iter().collect())
+            .unwrap_or_default();
+        for event in received {
+            match event {
+                TrayAction::Start => self.start(),
+                TrayAction::Stop => {
                     self.stop();
                     self.status = "Stopped".to_owned();
                 }
-                TRAY_EXIT => {
-                    self.exit_requested = true;
-                    self.stop();
-                    context.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                _ => {}
             }
         }
-
-        for event in TrayIconEvent::receiver().try_iter() {
-            if matches!(
-                event,
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                }
-            ) {
-                show_window(context);
-            }
-        }
+        context.request_repaint();
     }
 
     fn open_background_dialog(&mut self) {
@@ -584,7 +573,7 @@ impl eframe::App for SettingsApp {
         if root_ui
             .ctx()
             .input(|input| input.viewport().close_requested())
-            && !self.exit_requested
+            && !self.exit_requested.load(Ordering::SeqCst)
             && self.tray_icon.is_some()
         {
             root_ui
@@ -612,6 +601,62 @@ fn show_window(context: &egui::Context) {
     context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     context.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
+
+#[derive(Clone, Copy)]
+enum TrayAction {
+    Start,
+    Stop,
+}
+
+fn install_tray_event_handlers(
+    context: &egui::Context,
+    exit_requested: Arc<AtomicBool>,
+) -> Receiver<TrayAction> {
+    let (sender, receiver) = mpsc::channel();
+    let menu_context = context.clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        handle_tray_menu(event.id.as_ref(), &menu_context, &exit_requested, &sender);
+    }));
+
+    let tray_context = context.clone();
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        if matches!(
+            event,
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            }
+        ) {
+            show_window(&tray_context);
+            tray_context.request_repaint();
+        }
+    }));
+    receiver
+}
+
+fn handle_tray_menu(
+    id: &str,
+    context: &egui::Context,
+    exit_requested: &AtomicBool,
+    sender: &mpsc::Sender<TrayAction>,
+) {
+    match id {
+        TRAY_SHOW => show_window(context),
+        TRAY_START => {
+            let _ = sender.send(TrayAction::Start);
+        }
+        TRAY_STOP => {
+            let _ = sender.send(TrayAction::Stop);
+        }
+        TRAY_EXIT => {
+            exit_requested.store(true, Ordering::SeqCst);
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        _ => return,
+    }
+    context.request_repaint();
 }
 
 fn create_tray_icon() -> Result<TrayIcon, String> {
@@ -666,21 +711,44 @@ enum WorkerEvent {
     Failed(String),
 }
 
+#[derive(Default)]
+struct WorkerMailbox {
+    latest: Mutex<Option<WorkerEvent>>,
+}
+
+impl WorkerMailbox {
+    fn publish(&self, event: WorkerEvent) {
+        let mut latest = self
+            .latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *latest = Some(event);
+    }
+
+    fn take(&self) -> Option<WorkerEvent> {
+        self.latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
 struct DisplayWorker {
     stop_requested: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl DisplayWorker {
-    fn start(style: ClockStyle) -> (Self, Receiver<WorkerEvent>) {
+    fn start(style: ClockStyle) -> (Self, Arc<WorkerMailbox>) {
         let stop_requested = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop_requested);
-        let (sender, receiver) = mpsc::channel();
+        let events = Arc::new(WorkerMailbox::default());
+        let worker_events = Arc::clone(&events);
         let thread = thread::spawn(move || {
             let mut display = match ClockDisplay::open(style) {
                 Ok(display) => display,
                 Err(error) => {
-                    let _ = sender.send(WorkerEvent::Failed(error));
+                    worker_events.publish(WorkerEvent::Failed(error));
                     return;
                 }
             };
@@ -689,28 +757,23 @@ impl DisplayWorker {
             while !worker_stop.load(Ordering::SeqCst) {
                 match display.update() {
                     Ok(update) => {
-                        if sender
-                            .send(WorkerEvent::Displayed {
-                                time: update.time,
-                                logical_rgb: update.logical_rgb,
-                            })
-                            .is_err()
-                        {
-                            return;
-                        }
+                        worker_events.publish(WorkerEvent::Displayed {
+                            time: update.time,
+                            logical_rgb: update.logical_rgb,
+                        });
                     }
                     Err(error) => {
-                        let _ = sender.send(WorkerEvent::Failed(error));
+                        worker_events.publish(WorkerEvent::Failed(error));
                         return;
                     }
                 }
 
                 if !ticker.wait(&worker_stop) {
-                    let _ = sender.send(WorkerEvent::Stopped);
+                    worker_events.publish(WorkerEvent::Stopped);
                     return;
                 }
             }
-            let _ = sender.send(WorkerEvent::Stopped);
+            worker_events.publish(WorkerEvent::Stopped);
         });
 
         (
@@ -718,7 +781,7 @@ impl DisplayWorker {
                 stop_requested,
                 thread: Some(thread),
             },
-            receiver,
+            events,
         )
     }
 
@@ -738,5 +801,36 @@ mod tests {
     fn trims_optional_text_settings() {
         assert_eq!(non_empty("  Segoe UI "), Some("Segoe UI"));
         assert_eq!(non_empty("   "), None);
+    }
+
+    #[test]
+    fn worker_mailbox_keeps_only_the_latest_frame() {
+        let mailbox = WorkerMailbox::default();
+        mailbox.publish(WorkerEvent::Displayed {
+            time: "12:00:00".to_owned(),
+            logical_rgb: vec![1],
+        });
+        mailbox.publish(WorkerEvent::Displayed {
+            time: "12:00:01".to_owned(),
+            logical_rgb: vec![2],
+        });
+
+        let Some(WorkerEvent::Displayed { time, logical_rgb }) = mailbox.take() else {
+            panic!("expected the latest displayed frame");
+        };
+        assert_eq!(time, "12:00:01");
+        assert_eq!(logical_rgb, vec![2]);
+        assert!(mailbox.take().is_none());
+    }
+
+    #[test]
+    fn tray_exit_marks_the_close_as_intentional() {
+        let context = egui::Context::default();
+        let exit_requested = AtomicBool::new(false);
+        let (sender, _receiver) = mpsc::channel();
+
+        handle_tray_menu(TRAY_EXIT, &context, &exit_requested, &sender);
+
+        assert!(exit_requested.load(Ordering::SeqCst));
     }
 }
