@@ -6,7 +6,7 @@ Windowsを最初の動作対象とし、Linux向けビルドにも対応でき�
 
 ## 現在の状態
 
-リポジトリと最小Rustプロジェクトを初期化した段階です。DS339との通信処理やGUIはまだ実装していません。
+DS339のHIDインターフェースを列挙し、接続できることを確認するCLIを実装しています。映像送信とGUIはまだ実装していません。
 
 ## 開発
 
@@ -17,7 +17,10 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 cargo build
+cargo run
 ```
+
+`cargo run`はDS339のUSB ID `345F:9132`を検索し、HIDインターフェースを開けるか確認します。この段階ではデバイスへ制御コマンドや映像を送信しません。
 
 ## 実装予定
 
@@ -27,4 +30,3 @@ cargo build
 4. 設定GUIとタスクトレイ常駐
 5. USB切断・再接続とスリープ復帰への対応
 6. Linuxでのビルドと実機通信の検証
-

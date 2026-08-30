@@ -7,3 +7,8 @@ publish = false
 
 [dependencies]
 
+[target.'cfg(windows)'.dependencies]
+hidapi = { version = "2.6.6", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+hidapi = { version = "2.6.6", default-features = false, features = ["linux-native-basic-udev"] }
