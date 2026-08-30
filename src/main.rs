@@ -5,13 +5,26 @@ mod bulk;
 mod bulk;
 mod ds339;
 mod frame;
+mod renderer;
 
+use chrono::Local;
 use std::env;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+
+enum Command {
+    Probe,
+    TestPattern,
+    ClockOnce,
+    Clock,
+}
 
 fn main() -> ExitCode {
-    let send_test_pattern = match parse_arguments() {
-        Ok(send_test_pattern) => send_test_pattern,
+    let command = match parse_arguments() {
+        Ok(command) => command,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
@@ -135,20 +148,62 @@ fn main() -> ExitCode {
 
     println!("\nBulk connection check passed for {bulk_connected} device(s).");
 
-    if send_test_pattern && let Err(error) = send_test_frame() {
-        eprintln!("Test pattern failed: {error}");
+    let result = match command {
+        Command::Probe => Ok(()),
+        Command::TestPattern => send_test_frame(),
+        Command::ClockOnce => send_clock(false),
+        Command::Clock => send_clock(true),
+    };
+    if let Err(error) = result {
+        eprintln!("Display update failed: {error}");
         return ExitCode::FAILURE;
     }
 
     ExitCode::SUCCESS
 }
 
-fn parse_arguments() -> Result<bool, String> {
+fn parse_arguments() -> Result<Command, String> {
     let arguments: Vec<_> = env::args().skip(1).collect();
     match arguments.as_slice() {
-        [] => Ok(false),
-        [argument] if argument == "--test-pattern" => Ok(true),
-        _ => Err("Usage: jonsbo-ds339-minimal [--test-pattern]".to_owned()),
+        [] => Ok(Command::Probe),
+        [argument] if argument == "--test-pattern" => Ok(Command::TestPattern),
+        [argument] if argument == "--clock-once" => Ok(Command::ClockOnce),
+        [argument] if argument == "--clock" => Ok(Command::Clock),
+        _ => Err("Usage: jonsbo-ds339-minimal [--test-pattern|--clock-once|--clock]".to_owned()),
+    }
+}
+
+fn send_clock(continuous: bool) -> Result<(), String> {
+    let running = Arc::new(AtomicBool::new(true));
+    if continuous {
+        let running = Arc::clone(&running);
+        ctrlc::set_handler(move || running.store(false, Ordering::SeqCst))
+            .map_err(|error| format!("failed to install shutdown handler: {error}"))?;
+    }
+
+    let control = ds339::ControlConnection::open().map_err(|error| error.to_string())?;
+    let mut video = bulk::VideoConnection::open()?;
+    let renderer = renderer::ClockRenderer::new(renderer::ClockStyle::default())?;
+
+    control
+        .set_native_mode()
+        .map_err(|error| error.to_string())?;
+
+    loop {
+        let text = Local::now().format("%H:%M:%S").to_string();
+        let pixels = renderer.render(&text);
+        let encoded = frame::encode(&pixels)?;
+        video.write_all(&encoded)?;
+        println!("Displayed {text}");
+
+        if !continuous {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_secs(1));
+        if !running.load(Ordering::SeqCst) {
+            println!("Clock stopped.");
+            return Ok(());
+        }
     }
 }
 

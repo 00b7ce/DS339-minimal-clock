@@ -6,6 +6,11 @@ description = "A minimal desktop application for displaying a configurable clock
 publish = false
 
 [dependencies]
+chrono = "0.4.45"
+ctrlc = "3.5.2"
+fontdb = "0.24.0"
+fontdue = "0.9.4"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 
 [target.'cfg(windows)'.dependencies]
 hidapi = { version = "2.6.6", default-features = false, features = ["windows-native"] }
