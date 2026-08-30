@@ -27,6 +27,10 @@ Windowsでは純正ドライバーが導入する`libusb0.dll`を動的に利用
 
 `--test-pattern`を指定した場合だけ、DS339をネイティブ解像度に設定してRGBカラーバーを1フレーム送信します。通常起動では画面内容を変更しません。
 
+期待されるネイティブフレームは次の画像です。実機の取り付け方向では90度回転して表示される場合があります。
+
+![Expected RGB test pattern](docs/expected-test-pattern.svg)
+
 ## 実装予定
 
 1. DS339の検出と接続
