@@ -47,7 +47,11 @@ pub fn encode(pixels: &[u8]) -> Result<Vec<u8>, String> {
         (flagged_height >> 8) as u8,
         flagged_height as u8,
     ]);
-    frame.extend_from_slice(pixels);
+    frame.extend(
+        pixels
+            .iter()
+            .map(|byte| if *byte == 0xFF { 0xFE } else { *byte }),
+    );
     frame.extend_from_slice(&[0xFF, 0xC0, 0, 0, 0, 0, 0, 0]);
     Ok(frame)
 }
@@ -69,5 +73,25 @@ mod tests {
     #[test]
     fn rejects_wrong_pixel_buffer_size() {
         assert!(encode(&[]).is_err());
+    }
+
+    #[test]
+    fn escapes_frame_marker_bytes_in_pixel_data() {
+        let mut pixels = vec![0_u8; WIDTH * HEIGHT * BYTES_PER_PIXEL];
+        pixels[..4].copy_from_slice(&[0xFF, 0xFE, 0xC0, 0xFF]);
+
+        let frame = encode(&pixels).unwrap();
+
+        assert_eq!(
+            &frame[HEADER_SIZE..HEADER_SIZE + 4],
+            &[0xFE, 0xFE, 0xC0, 0xFE]
+        );
+        assert_eq!(
+            frame[HEADER_SIZE..frame.len() - TRAILER_SIZE]
+                .iter()
+                .filter(|byte| **byte == 0xFF)
+                .count(),
+            0
+        );
     }
 }

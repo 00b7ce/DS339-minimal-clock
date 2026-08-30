@@ -171,24 +171,29 @@ impl VideoConnection {
     }
 
     pub fn write_all(&mut self, data: &[u8]) -> Result<(), String> {
-        for chunk in data.chunks(65_536) {
-            // SAFETY: handle is open, endpoint 0x04 is the claimed bulk OUT endpoint,
-            // and the buffer remains valid for the duration of the synchronous call.
-            let written = unsafe {
-                (self.api.bulk_write)(
-                    self.handle,
-                    VIDEO_ENDPOINT.into(),
-                    chunk.as_ptr().cast_mut().cast(),
-                    chunk.len() as c_int,
-                    5_000,
-                )
-            };
-            if written < 0 {
-                return Err(format!("{} (code {written})", self.api.last_error()));
-            }
-            if written as usize != chunk.len() {
-                return Err(format!("short bulk write: {written}/{} bytes", chunk.len()));
-            }
+        let length = c_int::try_from(data.len())
+            .map_err(|_| format!("bulk write is too large: {} bytes", data.len()))?;
+
+        // The OEM wrapper submits one complete frame and follows it with a zero-length
+        // transfer. The latter acts as an explicit end-of-frame marker for the display.
+        self.write_transfer(data.as_ptr().cast_mut().cast(), length)?;
+
+        let mut zero_length_buffer: c_char = 0;
+        self.write_transfer(&mut zero_length_buffer, 0)?;
+        Ok(())
+    }
+
+    fn write_transfer(&self, buffer: *mut c_char, length: c_int) -> Result<(), String> {
+        // SAFETY: handle is open, endpoint 0x04 is the claimed bulk OUT endpoint,
+        // and buffer remains valid for the duration of the synchronous call.
+        let written = unsafe {
+            (self.api.bulk_write)(self.handle, VIDEO_ENDPOINT.into(), buffer, length, 3_000)
+        };
+        if written < 0 {
+            return Err(format!("{} (code {written})", self.api.last_error()));
+        }
+        if written != length {
+            return Err(format!("short bulk write: {written}/{length} bytes"));
         }
         Ok(())
     }
