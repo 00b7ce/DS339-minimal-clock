@@ -9,11 +9,14 @@ default-run = "jonsbo-ds339-minimal"
 [dependencies]
 chrono = "0.4.45"
 ctrlc = "3.5.2"
+directories = "6.0.0"
 eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 fontdb = "0.24.0"
 fontdue = "0.9.4"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.4"
 
 [target.'cfg(windows)'.dependencies]
 hidapi = { version = "2.6.6", default-features = false, features = ["windows-native"] }

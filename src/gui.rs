@@ -9,6 +9,7 @@ use chrono::Local;
 use eframe::egui;
 
 use crate::clock::{ClockDisplay, FrameTicker};
+use crate::profile::{ProfileRepository, ProfileStore};
 use crate::renderer::{
     ClockRenderer, ClockStyle, LOGICAL_HEIGHT, LOGICAL_WIDTH, system_font_families,
 };
@@ -27,6 +28,10 @@ pub fn run() -> Result<(), String> {
 }
 
 struct SettingsApp {
+    profile_repository: Option<ProfileRepository>,
+    profile_store: ProfileStore,
+    profile_name: String,
+    profile_status: String,
     background_path: String,
     background_color: [u8; 3],
     font_family: String,
@@ -49,17 +54,42 @@ struct SettingsApp {
 
 impl Default for SettingsApp {
     fn default() -> Self {
-        let style = ClockStyle::default();
+        let (profile_repository, profile_store, profile_status) = match ProfileRepository::new() {
+            Ok(repository) => match repository.load() {
+                Ok(loaded) => (
+                    Some(repository),
+                    loaded.store,
+                    loaded.warning.unwrap_or_default(),
+                ),
+                Err(error) => (Some(repository), ProfileStore::default(), error),
+            },
+            Err(error) => (None, ProfileStore::default(), error),
+        };
+        let profile_name = profile_store.selected_profile.clone();
+        let style = profile_store
+            .profiles
+            .get(&profile_name)
+            .cloned()
+            .unwrap_or_default();
+        let (position_x, position_y) = style.position.unwrap_or_default();
         Self {
-            background_path: String::new(),
+            profile_repository,
+            profile_store,
+            profile_name,
+            profile_status,
+            background_path: style
+                .background_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
             background_color: style.background_color,
-            font_family: String::new(),
+            font_family: style.font_family.unwrap_or_default(),
             font_families: system_font_families(),
             font_size: style.font_size,
             text_color: style.text_color,
-            centered: true,
-            position_x: 0,
-            position_y: 0,
+            centered: style.position.is_none(),
+            position_x,
+            position_y,
             status: "Stopped".to_owned(),
             worker: None,
             events: None,
@@ -91,6 +121,56 @@ impl SettingsApp {
         self.worker = Some(worker);
         self.events = Some(events);
         self.status = "Connecting...".to_owned();
+    }
+
+    fn apply_style(&mut self, style: ClockStyle) {
+        self.background_path = style
+            .background_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        self.background_color = style.background_color;
+        self.font_family = style.font_family.unwrap_or_default();
+        self.font_size = style.font_size;
+        self.text_color = style.text_color;
+        self.centered = style.position.is_none();
+        (self.position_x, self.position_y) = style.position.unwrap_or_default();
+    }
+
+    fn load_profile(&mut self, name: &str) {
+        let Some(style) = self.profile_store.profiles.get(name).cloned() else {
+            self.profile_status = format!("Profile not found: {name}");
+            return;
+        };
+        self.profile_store.selected_profile = name.to_owned();
+        self.profile_name = name.to_owned();
+        self.apply_style(style);
+        self.save_profile_store("Selected profile saved");
+    }
+
+    fn save_profile(&mut self) {
+        let name = self.profile_name.trim().to_owned();
+        if name.is_empty() {
+            self.profile_status = "Profile name is required".to_owned();
+            return;
+        }
+        self.profile_store
+            .profiles
+            .insert(name.clone(), self.style());
+        self.profile_store.selected_profile = name.clone();
+        self.profile_name = name;
+        self.save_profile_store("Profile saved");
+    }
+
+    fn save_profile_store(&mut self, success: &str) {
+        let Some(repository) = &self.profile_repository else {
+            self.profile_status = "Profile directory is unavailable".to_owned();
+            return;
+        };
+        self.profile_status = match repository.save(&self.profile_store) {
+            Ok(()) => format!("{success}: {}", repository.path().display()),
+            Err(error) => error,
+        };
     }
 
     fn stop(&mut self) {
@@ -216,6 +296,50 @@ impl eframe::App for SettingsApp {
         egui::CentralPanel::default().show(root_ui, |ui| {
             ui.heading("JONSBO DS339 Clock");
             ui.add_space(8.0);
+
+            let profile_names: Vec<_> = self.profile_store.profiles.keys().cloned().collect();
+            let mut selected_profile = None;
+            egui::Grid::new("profiles")
+                .num_columns(2)
+                .spacing([16.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Profile");
+                    egui::ComboBox::from_id_salt("profile")
+                        .selected_text(&self.profile_store.selected_profile)
+                        .width(280.0)
+                        .show_ui(ui, |ui| {
+                            for name in &profile_names {
+                                if ui
+                                    .selectable_label(
+                                        self.profile_store.selected_profile == *name,
+                                        name,
+                                    )
+                                    .clicked()
+                                {
+                                    selected_profile = Some(name.clone());
+                                }
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Save as");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.profile_name).desired_width(220.0),
+                        );
+                        if ui.button("Save").clicked() {
+                            self.save_profile();
+                        }
+                    });
+                    ui.end_row();
+                });
+            if let Some(name) = selected_profile {
+                self.load_profile(&name);
+            }
+            if !self.profile_status.is_empty() {
+                ui.small(&self.profile_status);
+            }
+            ui.separator();
 
             egui::Grid::new("settings")
                 .num_columns(2)

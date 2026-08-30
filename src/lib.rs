@@ -7,4 +7,5 @@ pub mod clock;
 pub mod ds339;
 pub mod frame;
 pub mod gui;
+pub mod profile;
 pub mod renderer;

@@ -7,6 +7,7 @@ use fontdue::layout::{
 };
 use fontdue::{Font, FontSettings};
 use image::imageops::FilterType;
+use serde::{Deserialize, Serialize};
 
 use crate::frame;
 
@@ -29,7 +30,8 @@ pub fn system_font_families() -> Vec<String> {
     families.into_values().collect()
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ClockStyle {
     pub background_path: Option<PathBuf>,
     pub background_color: [u8; 3],
