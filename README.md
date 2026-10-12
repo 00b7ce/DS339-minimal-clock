@@ -26,6 +26,9 @@ An unofficial, lightweight desktop application that continuously displays a conf
 
 The Windows USB video transport dynamically loads `libusb0.dll`. If the DLL cannot be found, verify the official software installation and ensure that its directory is on the Windows search path or place the DLL beside the executable. The DLL itself is not distributed in this repository or its releases.
 
+If Windows detects the display but output remains black or fails with libusb
+timeout `-116`, see [USB troubleshooting](docs/usb-troubleshooting.md).
+
 Closing the settings window keeps the application running in the system tray. Use **Exit** in the tray menu to stop output and terminate the application.
 
 ### Profiles
@@ -95,6 +98,11 @@ cargo build --release --bins
 ```
 
 The currently targeted DS339 has USB VID `345F`, PID `9132`, image interface `3`, and bulk OUT endpoint `0x04`. Frames are rendered as a landscape `960x376` logical image and converted to the device's native orientation and BGR byte order before transmission.
+
+Startup initializes the panel control registers and GPIO, fills both initial
+frame buffers, and then enables the screen. Frames are sent in 64 KiB chunks
+followed by a zero-length transfer. Transfer errors identify the failing offset
+or end-of-frame stage; an incomplete frame is never automatically replayed.
 
 ## Known limitations
 

@@ -39,6 +39,13 @@ impl ControlConnection {
 
         self.write_control([0xA6, 0x07, 0x01, 0x02, 0, 0, 0, 0])?;
         self.write_control([0xA6, 0x05, 0x00, 0, 0, 0, 0, 0])?;
+        // Cold-start panel/GPIO setup observed in the OEM initialization sequence.
+        // Mode commands alone can leave the bulk receiver unready after reconnect.
+        self.write_control([0xB6, 0xF0, 0x05, 0x40, 0, 0, 0, 0])?;
+        self.write_control([0xC6, 0xB0, 0xDF, 0, 0, 0, 0, 0])?;
+        self.write_control([0xC6, 0xA0, 0xE4, 0, 0, 0, 0, 0])?;
+        self.write_control([0xC6, 0xA0, 0xF0, 0, 0, 0, 0, 0])?;
+        self.write_control([0xB6, 0xF0, 0x16, 0x08, 0, 0, 0, 0])?;
         self.write_control([0xA6, 0x03, 0x03, 0, 0, 0, 0, 0])?;
         self.write_control([
             0xA6,
@@ -61,15 +68,24 @@ impl ControlConnection {
             height_low,
         ])?;
         self.write_control([0xA6, 0x04, 0x01, 0, 0, 0, 0, 0])?;
-        self.write_control([0xA6, 0x05, 0x01, 0, 0, 0, 0, 0])?;
         thread::sleep(Duration::from_millis(100));
         Ok(())
+    }
+
+    /// Enable the panel only after both initial frame buffers have been filled.
+    pub fn show_screen(&self) -> Result<(), HidError> {
+        self.write_control([0xB6, 0xF0, 0x05, 0x50, 0, 0, 0, 0])?;
+        self.write_control([0xA6, 0x05, 0x01, 0, 0, 0, 0, 0])
     }
 
     fn write_control(&self, payload: [u8; 8]) -> Result<(), HidError> {
         let mut report = [0_u8; 9];
         report[1..].copy_from_slice(&payload);
-        self.device.send_feature_report(&report)?;
+        self.device
+            .send_feature_report(&report)
+            .map_err(|error| HidError::HidApiError {
+                message: format!("HID command {payload:02X?}: {error}"),
+            })?;
         Ok(())
     }
 }

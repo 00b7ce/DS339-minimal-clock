@@ -30,23 +30,16 @@ impl VideoConnection {
 
     pub fn write_all(&mut self, data: &[u8]) -> Result<(), String> {
         let timeout = std::time::Duration::from_secs(3);
-        let written = self
-            .handle
-            .write_bulk(VIDEO_ENDPOINT, data, timeout)
-            .map_err(|error| error.to_string())?;
-        if written != data.len() {
-            return Err(format!("short bulk write: {written}/{} bytes", data.len()));
-        }
-
-        let written = self
-            .handle
-            .write_bulk(VIDEO_ENDPOINT, &[], timeout)
-            .map_err(|error| error.to_string())?;
-        if written != 0 {
-            return Err(format!("invalid zero-length bulk write result: {written}"));
-        }
-
-        Ok(())
+        crate::transport::write_frame(data, |chunk| {
+            let written = self
+                .handle
+                .write_bulk(VIDEO_ENDPOINT, chunk, timeout)
+                .map_err(|error| error.to_string())?;
+            if written != chunk.len() {
+                return Err(format!("short bulk write: {written}/{} bytes", chunk.len()));
+            }
+            Ok(())
+        })
     }
 }
 

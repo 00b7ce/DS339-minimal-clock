@@ -171,16 +171,17 @@ impl VideoConnection {
     }
 
     pub fn write_all(&mut self, data: &[u8]) -> Result<(), String> {
-        let length = c_int::try_from(data.len())
-            .map_err(|_| format!("bulk write is too large: {} bytes", data.len()))?;
-
-        // The OEM wrapper submits one complete frame and follows it with a zero-length
-        // transfer. The latter acts as an explicit end-of-frame marker for the display.
-        self.write_transfer(data.as_ptr().cast_mut().cast(), length)?;
-
-        let mut zero_length_buffer: c_char = 0;
-        self.write_transfer(&mut zero_length_buffer, 0)?;
-        Ok(())
+        crate::transport::write_frame(data, |chunk| {
+            let length = c_int::try_from(chunk.len())
+                .map_err(|_| format!("bulk write is too large: {} bytes", chunk.len()))?;
+            let mut zero_length_buffer: c_char = 0;
+            let buffer = if chunk.is_empty() {
+                &mut zero_length_buffer
+            } else {
+                chunk.as_ptr().cast_mut().cast()
+            };
+            self.write_transfer(buffer, length)
+        })
     }
 
     fn write_transfer(&self, buffer: *mut c_char, length: c_int) -> Result<(), String> {

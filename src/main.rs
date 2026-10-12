@@ -214,6 +214,8 @@ fn send_test_frame() -> Result<(), String> {
         .set_native_mode()
         .map_err(|error| error.to_string())?;
     video.write_all(&encoded)?;
+    video.write_all(&encoded)?;
+    control.show_screen().map_err(|error| error.to_string())?;
     println!(
         "\nSent a {}x{} RGB test pattern ({} bytes).",
         frame::WIDTH,

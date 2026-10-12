@@ -9,7 +9,8 @@ use crate::frame;
 use crate::renderer::{ClockRenderer, ClockStyle};
 
 pub struct ClockDisplay {
-    _control: ds339::ControlConnection,
+    control: ds339::ControlConnection,
+    screen_shown: bool,
     video: bulk::VideoConnection,
     renderer: ClockRenderer,
 }
@@ -66,7 +67,8 @@ impl ClockDisplay {
             .map_err(|error| error.to_string())?;
 
         Ok(Self {
-            _control: control,
+            control,
+            screen_shown: false,
             video,
             renderer,
         })
@@ -78,6 +80,13 @@ impl ClockDisplay {
         let native_bgr = ClockRenderer::native_bgr(&logical_rgb)?;
         let encoded = frame::encode(&native_bgr)?;
         self.video.write_all(&encoded)?;
+        if !self.screen_shown {
+            self.video.write_all(&encoded)?;
+            self.control
+                .show_screen()
+                .map_err(|error| error.to_string())?;
+            self.screen_shown = true;
+        }
         Ok(ClockUpdate {
             time: text,
             logical_rgb,
