@@ -41,3 +41,12 @@ Startup must initialize panel/GPIO and send two complete frames before enabling
 the screen. See `docs/usb-troubleshooting.md` for the protocol evidence and the
 bounded Windows hardware verification. Do not skip that initialization based
 only on Device Manager recognition or a successful HID status read.
+
+## Releases
+
+Keep the package version in `Cargo.toml` and `Cargo.lock` aligned with the tag.
+Add reviewed release notes under `docs/releases/<tag>.md`; the release workflow
+uses that file when present and includes `docs/` in both platform archives.
+Pushing a `v*` tag runs Windows/Linux verification and automatically publishes
+a public GitHub Release after both builds pass. Confirm the repository, commit,
+tag, push and public publication before pushing; do not treat it as draft-only.

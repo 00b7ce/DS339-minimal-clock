@@ -54,6 +54,7 @@ jobs:
           Copy-Item target/release/jonsbo-ds339-gui.exe $packageDirectory
           Copy-Item target/release/jonsbo-ds339-minimal.exe $packageDirectory
           Copy-Item README.md, LICENSE $packageDirectory
+          Copy-Item docs -Destination $packageDirectory -Recurse
           Compress-Archive -Path "$packageDirectory/*" -DestinationPath "dist/$package.zip"
 
       - name: Package Linux binaries
@@ -66,6 +67,7 @@ jobs:
           cp target/release/jonsbo-ds339-gui "$package_directory/"
           cp target/release/jonsbo-ds339-minimal "$package_directory/"
           cp README.md LICENSE "$package_directory/"
+          cp -R docs "$package_directory/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
 
       - name: Upload packaged binaries
@@ -86,14 +88,26 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v7
+
       - name: Download packages
         uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
+      - name: Select release notes
+        id: notes
+        shell: bash
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then
+            echo "path=$notes" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
+          body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true

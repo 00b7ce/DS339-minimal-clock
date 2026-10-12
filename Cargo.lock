@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "jonsbo-ds339-minimal"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "auto-launcher",
  "chrono",
